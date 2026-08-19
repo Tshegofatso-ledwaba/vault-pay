@@ -1,0 +1,337 @@
+generator client {
+  provider = "prisma-client-js"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum RoleName {
+  CUSTOMER
+  SUPPORT_AGENT
+  COMPLIANCE_OFFICER
+  FINANCE_OFFICER
+  ADMIN
+}
+
+enum UserStatus {
+  ACTIVE
+  SUSPENDED
+  LOCKED
+  PENDING_VERIFICATION
+  CLOSED
+}
+
+enum AccountStatus {
+  ACTIVE
+  SUSPENDED
+  FROZEN
+  CLOSED
+  PENDING_REVIEW
+}
+
+enum TransactionType {
+  DEPOSIT
+  WITHDRAWAL
+  TRANSFER
+  PAYMENT
+  REFUND
+  REVERSAL
+}
+
+enum TransactionStatus {
+  INITIATED
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+  CANCELLED
+  REVERSED
+  ON_HOLD
+}
+
+enum RiskLevel {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum NotificationType {
+  TRANSACTION_SUCCESS
+  TRANSACTION_FAILED
+  SECURITY_ALERT
+  FRAUD_ALERT
+  ACCOUNT_ALERT
+  MFA_ENABLED
+  PASSWORD_CHANGED
+  COMPLIANCE_UPDATE
+}
+
+enum FraudStatus {
+  OPEN
+  UNDER_REVIEW
+  APPROVED
+  BLOCKED
+  FALSE_POSITIVE
+}
+
+enum ComplianceDecision {
+  APPROVE
+  REJECT
+  HOLD
+  ESCALATE
+}
+
+model Role {
+  id          String           @id @default(cuid())
+  name        RoleName         @unique
+  description String?
+  createdAt   DateTime         @default(now())
+  users       User[]
+  permissions RolePermission[]
+}
+
+model Permission {
+  id          String           @id @default(cuid())
+  name        String           @unique
+  description String?
+  createdAt   DateTime         @default(now())
+  roles       RolePermission[]
+}
+
+model RolePermission {
+  id          String     @id @default(cuid())
+  roleId      String
+  permissionId String
+  role        Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission  Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@unique([roleId, permissionId])
+}
+
+model User {
+  id                    String              @id @default(cuid())
+  firstName             String
+  lastName              String
+  email                 String              @unique
+  passwordHash          String
+  phone                 String?
+  emailVerified         Boolean             @default(false)
+  mfaEnabled            Boolean             @default(false)
+  status                UserStatus          @default(PENDING_VERIFICATION)
+  roleId                String
+  createdAt             DateTime            @default(now())
+  updatedAt             DateTime            @updatedAt
+  role                  Role                @relation(fields: [roleId], references: [id])
+  accounts              Account[]
+  sessions              Session[]
+  notifications         Notification[]
+  auditLogs             AuditLog[]         @relation("AuditUser")
+  actorLogs             AuditLog[]         @relation("AuditActor")
+  payments              Payment[]
+  fraudAlerts           FraudAlert[]
+  complianceCases       ComplianceCase[]
+  mfa                   MFA?
+  sentTransactions      Transaction[]       @relation("transactionsSent")
+  receivedTransactions  Transaction[]       @relation("transactionsReceived")
+
+  @@index([email])
+  @@index([roleId])
+}
+
+model Session {
+  id        String    @id @default(cuid())
+  userId    String
+  tokenHash String    @unique
+  userAgent String?
+  ipAddress String?
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime  @default(now())
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model MFA {
+  id            String   @id @default(cuid())
+  userId        String   @unique
+  secret        String
+  recoveryCodes String[]
+  enabled       Boolean  @default(false)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model Account {
+  id               String        @id @default(cuid())
+  accountReference String        @unique
+  userId           String
+  currency         String        @default("ZAR")
+  status           AccountStatus @default(ACTIVE)
+  availableBalance Decimal       @db.Decimal(18, 2)
+  ledgerBalance    Decimal       @db.Decimal(18, 2)
+  version          Int           @default(0)
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+  user             User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  fromTransactions Transaction[] @relation("sourceAccount")
+  toTransactions   Transaction[] @relation("destinationAccount")
+  ledgerEntries    LedgerEntry[]
+
+  @@index([userId])
+  @@index([accountReference])
+}
+
+model Transaction {
+  id                    String            @id @default(cuid())
+  publicRef             String            @unique
+  sourceAccountId       String?
+  destinationAccountId  String?
+  senderUserId          String?
+  receiverUserId        String?
+  amount                Decimal           @db.Decimal(18, 2)
+  currency              String
+  type                 TransactionType
+  status               TransactionStatus @default(INITIATED)
+  riskStatus           RiskLevel         @default(LOW)
+  idempotencyKey       String?           @unique
+  failureReason        String?
+  note                 String?
+  createdAt            DateTime          @default(now())
+  updatedAt            DateTime          @updatedAt
+  completedAt          DateTime?
+  sourceAccount        Account?          @relation("sourceAccount", fields: [sourceAccountId], references: [id])
+  destinationAccount   Account?          @relation("destinationAccount", fields: [destinationAccountId], references: [id])
+  senderUser           User?             @relation("transactionsSent", fields: [senderUserId], references: [id])
+  receiverUser         User?             @relation("transactionsReceived", fields: [receiverUserId], references: [id])
+  ledgerEntries        LedgerEntry[]
+  fraudAlerts          FraudAlert[]
+  payments             Payment[]
+
+  @@index([status])
+  @@index([type])
+  @@index([sourceAccountId])
+  @@index([destinationAccountId])
+  @@index([createdAt])
+}
+
+model LedgerEntry {
+  id            String      @id @default(cuid())
+  transactionId String
+  accountId     String
+  entryType     String
+  amount        Decimal     @db.Decimal(18, 2)
+  balanceAfter  Decimal     @db.Decimal(18, 2)
+  createdAt     DateTime    @default(now())
+  transaction   Transaction @relation(fields: [transactionId], references: [id], onDelete: Cascade)
+  account       Account     @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@index([transactionId])
+  @@index([accountId])
+}
+
+model Payment {
+  id              String      @id @default(cuid())
+  userId          String
+  transactionId   String?
+  provider        String      @default("sandbox")
+  providerRef     String?
+  amount          Decimal     @db.Decimal(18, 2)
+  currency        String
+  status          String      @default("PENDING")
+  webhookVerified Boolean     @default(false)
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+  user            User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  transaction     Transaction? @relation(fields: [transactionId], references: [id])
+
+  @@index([userId])
+}
+
+model FraudAlert {
+  id           String      @id @default(cuid())
+  userId       String
+  transactionId String?
+  riskScore    Int
+  riskLevel    RiskLevel
+  reasons      Json
+  status       FraudStatus @default(OPEN)
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+  user         User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  transaction  Transaction? @relation(fields: [transactionId], references: [id])
+
+  @@index([userId])
+  @@index([status])
+}
+
+model ComplianceCase {
+  id           String              @id @default(cuid())
+  userId       String
+  fraudAlertId String?
+  status       FraudStatus         @default(OPEN)
+  decision     ComplianceDecision?
+  notes        String?
+  createdAt    DateTime            @default(now())
+  updatedAt    DateTime            @updatedAt
+  user         User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model Notification {
+  id        String          @id @default(cuid())
+  userId    String
+  type      NotificationType
+  title     String
+  body      String
+  readAt    DateTime?
+  createdAt DateTime        @default(now())
+  user      User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([readAt])
+}
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  actorId   String?
+  userId    String?
+  action    String
+  resource  String
+  resourceId String?
+  ipAddress String?
+  userAgent String?
+  metadata  Json?
+  createdAt DateTime @default(now())
+  actor     User?    @relation("AuditActor", fields: [actorId], references: [id])
+  user      User?    @relation("AuditUser", fields: [userId], references: [id])
+
+  @@index([action])
+  @@index([resource])
+  @@index([createdAt])
+}
+
+model ReconciliationRecord {
+  id              String   @id @default(cuid())
+  providerRef     String?
+  internalRef     String?
+  amount          Decimal  @db.Decimal(18, 2)
+  currency        String
+  status          String   @default("OPEN")
+  discrepancyType String?
+  details         String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+}
+
+model IdempotencyKey {
+  id        String   @id @default(cuid())
+  key       String   @unique
+  resource  String
+  response  Json
+  createdAt DateTime @default(now())
+}
+
